@@ -7,6 +7,16 @@ import { mutate, ingestAttendance } from '../src/lib/service';
 import { grade, csvCell, bangkokDate, ready, type Actor } from '../src/lib/policy';
 import { PGlite } from '@electric-sql/pglite';
 import { readEmployees } from '../src/lib/repository';
+import { applyMigrations } from '../src/lib/migrations';
+import {
+  reserveAsset,
+  storeLocalAsset,
+  readableAsset,
+  validateFileHeader,
+  byteRange,
+} from '../src/lib/files';
+import { learningAlerts } from '../src/lib/learning';
+import { mkdtemp, rm } from 'node:fs/promises';
 process.env.DATABASE_URL = 'pglite:memory';
 let admin: Actor, learner: Actor, manager: Actor, outsider: Actor;
 let company: string,
@@ -19,8 +29,7 @@ let company: string,
   enrollment: string,
   secondLearner: string;
 before(async () => {
-  const db = database() as PGlite;
-  await db.exec(readFileSync('db/001_initial.sql', 'utf8'));
+  await applyMigrations();
   [company, other] = [randomUUID(), randomUUID()];
   await query(`INSERT INTO companies(id,name,slug) VALUES($1,'A','test-a'),($2,'B','test-b')`, [
     company,
@@ -337,4 +346,263 @@ test('grading, CSV protection and Bangkok dates', () => {
   assert.throws(() => grade([], {}));
   assert.equal(csvCell('=HYPERLINK("evil")'), '"\'=HYPERLINK(""evil"")"');
   assert.equal(bangkokDate(new Date('2026-10-26T18:00:00Z')), '2026-10-27');
+});
+
+test('versioning keeps previous scores and requires every practical checklist item', async () => {
+  const clone = await mutate(admin, 'course.clone', { id: course });
+  const next = String(clone.id);
+  assert.equal((await query('SELECT version FROM courses WHERE id=$1', [next]))[0].version, 2);
+  await mutate(admin, 'skill.item', {
+    course_id: next,
+    title: 'Observe safe handling',
+    required: true,
+  });
+  await mutate(admin, 'course.publish', { id: next });
+  const [n] = await query('SELECT id FROM enrollments WHERE course_id=$1 AND employee_id=$2', [
+    next,
+    learner.employeeId,
+  ]);
+  for (const l of await query('SELECT id FROM lessons WHERE course_id=$1', [next]))
+    await mutate(learner, 'lesson.complete', { enrollment_id: n.id, lesson_id: l.id });
+  const qs = await query('SELECT id,correct_index FROM questions WHERE course_id=$1', [next]);
+  await mutate(learner, 'quiz.submit', {
+    enrollment_id: n.id,
+    answers: Object.fromEntries(qs.map((q) => [q.id, q.correct_index])),
+  });
+  await assert.rejects(
+    mutate(manager, 'skill.signoff', { enrollment_id: n.id, note: 'Observed correctly' }),
+    /เช็กลิสต์/,
+  );
+  const [item] = await query('SELECT id FROM skill_items WHERE course_id=$1', [next]);
+  await assert.rejects(
+    mutate(learner, 'skill.review', {
+      enrollment_id: n.id,
+      checks: [{ item_id: item.id, passed: true, note: 'Self checked' }],
+    }),
+    /ไม่มีสิทธิ์/,
+  );
+  await mutate(manager, 'skill.review', {
+    enrollment_id: n.id,
+    checks: [{ item_id: item.id, passed: false, note: 'Needs more practice' }],
+  });
+  await assert.rejects(
+    mutate(manager, 'skill.signoff', { enrollment_id: n.id, note: 'Observed correctly' }),
+    /เช็กลิสต์/,
+  );
+  await mutate(manager, 'skill.review', {
+    enrollment_id: n.id,
+    checks: [{ item_id: item.id, passed: true, note: 'Observed task safely' }],
+  });
+  await mutate(manager, 'skill.signoff', {
+    enrollment_id: n.id,
+    note: 'Passed practical observation',
+  });
+  assert.ok(
+    (await query('SELECT signed_off_at FROM enrollments WHERE id=$1', [n.id]))[0].signed_off_at,
+  );
+  assert.equal(
+    (await query('SELECT best_score FROM enrollments WHERE id=$1', [enrollment]))[0].best_score,
+    100,
+  );
+  await assert.rejects(mutate(outsider, 'course.clone', { id: course }), /ไม่พบหลักสูตร/);
+});
+
+test('paths auto-assign deadlines from start date, remain immutable and preserve existing results', async () => {
+  const p = await mutate(admin, 'path.create', {
+    title: 'First week path',
+    description: 'Starting confidently',
+    position_id: position,
+    auto_assign: true,
+  });
+  const pathId = String(p.id);
+  await assert.rejects(mutate(admin, 'path.publish', { id: pathId }), /อย่างน้อย/);
+  await mutate(admin, 'path.item', {
+    path_id: pathId,
+    course_id: course,
+    stage: 'day_one',
+    due_days: 0,
+  });
+  await mutate(admin, 'path.publish', { id: pathId });
+  await assert.rejects(
+    mutate(admin, 'path.item', {
+      path_id: pathId,
+      course_id: course,
+      stage: 'first_week',
+      due_days: 7,
+    }),
+    /เผยแพร่แล้ว/,
+  );
+  const start = bangkokDate(new Date(Date.now() + 86400000));
+  await mutate(admin, 'employee.create', {
+    name: 'Path learner',
+    email: 'path@test.local',
+    code: 'PATH',
+    phone: '',
+    branch: 'HQ',
+    department_id: department,
+    position_id: position,
+    manager_id: manager.employeeId,
+    start_date: start,
+    probation_end: bangkokDate(new Date(Date.now() + 90 * 86400000)),
+    password: 'path-test-password',
+    role: 'employee',
+  });
+  const [e] = await query(`SELECT id FROM employees WHERE code='PATH'`);
+  const [n] = await query(
+    'SELECT due_date::text AS due FROM enrollments WHERE course_id=$1 AND employee_id=$2',
+    [course, e.id],
+  );
+  assert.equal(n.due, start);
+  assert.equal(
+    (await query('SELECT best_score FROM enrollments WHERE id=$1', [enrollment]))[0].best_score,
+    100,
+  );
+  await assert.rejects(
+    mutate(outsider, 'path.assign', { path_id: pathId, employee_id: e.id, start_date: start }),
+    /ไม่มีสิทธิ์/,
+  );
+  await mutate(manager, 'path.assign', { path_id: pathId, employee_id: e.id, start_date: start });
+  assert.equal(
+    (
+      await query('SELECT id FROM path_assignments WHERE employee_id=$1 AND path_id=$2', [
+        e.id,
+        pathId,
+      ])
+    ).length,
+    1,
+  );
+});
+
+test('private uploads validate contents and restrict reads by company and enrollment', async () => {
+  const folder = await mkdtemp('/tmp/peopleflow-files-');
+  process.env.UPLOAD_DIRECTORY = folder;
+  try {
+    const c = await mutate(admin, 'course.clone', { id: course });
+    const draft = String(c.id);
+    const content = '%PDF-1.4\nSample training document';
+    const file = new File([content], 'manual.pdf', { type: 'application/pdf' });
+    await assert.rejects(
+      reserveAsset(learner, {
+        course_id: draft,
+        filename: file.name,
+        content_type: file.type,
+        size_bytes: file.size,
+      }),
+      /ไม่มีสิทธิ์/,
+    );
+    const asset = await reserveAsset(admin, {
+      course_id: draft,
+      filename: file.name,
+      content_type: file.type,
+      size_bytes: file.size,
+    });
+    await storeLocalAsset(admin, asset.id, file);
+    await assert.rejects(readableAsset(outsider, asset.id), /ไม่พบไฟล์/);
+    await assert.rejects(readableAsset(learner, asset.id), /ไม่ได้รับมอบหมาย/);
+    await mutate(admin, 'lesson.create', {
+      course_id: draft,
+      title: 'Private PDF lesson',
+      type: 'document',
+      content: 'Read this manual',
+      asset_id: asset.id,
+    });
+    await mutate(admin, 'course.publish', { id: draft });
+    await mutate(admin,'course.assign',{course_id:draft,employee_id:learner.employeeId,due_date:bangkokDate()});
+    assert.equal((await readableAsset(learner, asset.id)).filename, 'manual.pdf');
+    await assert.rejects(storeLocalAsset(admin, asset.id, file), /เขียนทับ/);
+    const otherDraft = String((await mutate(admin, 'course.clone', { id: course })).id);
+    const invalid = new File(['not really a PDF'], 'fake.pdf', { type: 'application/pdf' });
+    const bad = await reserveAsset(admin, {
+      course_id: otherDraft,
+      filename: invalid.name,
+      content_type: invalid.type,
+      size_bytes: invalid.size,
+    });
+    await assert.rejects(storeLocalAsset(admin, bad.id, invalid), /เนื้อหาไฟล์/);
+    await assert.rejects(
+      mutate(admin, 'lesson.create', {
+        course_id: otherDraft,
+        title: 'Invalid PDF',
+        type: 'document',
+        content: 'Read this file',
+        asset_id: bad.id,
+      }),
+      /อัปโหลดสำเร็จ/,
+    );
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+    delete process.env.UPLOAD_DIRECTORY;
+  }
+});
+
+test('alerts are scoped to supplied authorized roster and read state does not hide overdue work', () => {
+  const e = { id: learner.employeeId, name: 'Learner', status: 'active' };
+  const n = {
+    id: enrollment,
+    employee_id: e.id,
+    title: 'Safety',
+    published: true,
+    requires_signoff: true,
+    passed_at: null,
+    signed_off_at: null,
+    due_date: '2026-10-25',
+  };
+  const alerts = learningAlerts(learner, [e], [n], [], '2026-10-27');
+  assert.equal(alerts.length, 1);
+  assert.match(alerts[0].key, /overdue/);
+  assert.equal(learningAlerts(learner, [], [n], [], '2026-10-27').length, 0);
+  const read = learningAlerts(
+    learner,
+    [e],
+    [n],
+    [{ notification_key: alerts[0].key }],
+    '2026-10-27',
+  );
+  assert.equal(read[0].read, true);
+  assert.equal(
+    learningAlerts(
+      learner,
+      [e],
+      [{ ...n, passed_at: '2026-10-26', signed_off_at: '2026-10-26' }],
+      [],
+      '2026-10-27',
+    ).length,
+    0,
+  );
+});
+
+test('migrations rerun safely and file range validation rejects invalid requests', async () => {
+  await applyMigrations();
+  assert.equal((await query('SELECT * FROM schema_migrations')).length, 2);
+  assert.deepEqual(byteRange('bytes=0-15', 100), { start: 0, end: 15 });
+  assert.deepEqual(byteRange('bytes=-10', 100), { start: 90, end: 99 });
+  assert.throws(() => byteRange('bytes=100-', 100));
+  assert.throws(() => byteRange('bytes=-0', 100));
+  assert.throws(() => validateFileHeader('application/pdf', new Uint8Array([1, 2, 3])));
+});
+
+test('draft lesson edits do not change published versions or permit tenant escape', async () => {
+  const c = String((await mutate(admin, 'course.clone', { id: course })).id);
+  const [l] = await query('SELECT id,content FROM lessons WHERE course_id=$1', [c]);
+  await mutate(admin, 'lesson.update', {
+    id: l.id,
+    title: 'Updated manual',
+    content: 'New version text',
+  });
+  assert.equal(
+    (await query('SELECT content FROM lessons WHERE id=$1', [l.id]))[0].content,
+    'New version text',
+  );
+  assert.notEqual(
+    (await query('SELECT content FROM lessons WHERE id=$1', [lesson]))[0].content,
+    'New version text',
+  );
+  await assert.rejects(
+    mutate(admin, 'lesson.update', { id: lesson, title: 'Bad edit', content: 'Changed published' }),
+    /เผยแพร่แล้ว/,
+  );
+  await assert.rejects(
+    mutate(outsider, 'lesson.update', { id: l.id, title: 'Bad edit', content: 'Cross company' }),
+    /ไม่พบ/,
+  );
 });

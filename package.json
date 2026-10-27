@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.3.14",
+    "@vercel/blob": "^2.8.2",
     "bcryptjs": "^3.0.2",
     "lucide-react": "latest",
     "next": "latest",

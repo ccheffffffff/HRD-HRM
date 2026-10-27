@@ -3060,3 +3060,71 @@ code {
     padding: 0 18px;
   }
 }
+:root {
+  --phase-space: 20px;
+}
+.phase-form {
+  padding: 20px;
+}
+.phase-form summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+.phase-form .data-form {
+  display: grid;
+  gap: 15px;
+  margin-top: 18px;
+}
+.phase-inline-form {
+  display: flex;
+  gap: 12px;
+  align-items: end;
+  flex-wrap: wrap;
+  margin: 15px 0 20px;
+}
+.phase-inline-form label {
+  flex: 1;
+  min-width: 130px;
+}
+.path-stages {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  padding: 0 22px 22px;
+}
+.path-stages > div {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fafcf9;
+}
+.path-stages h3 {
+  font-size: 13px;
+  color: var(--teal);
+  margin-bottom: 12px;
+}
+.path-step {
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.path-step strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+}
+.path-step small {
+  display: block;
+  color: var(--muted);
+  margin: 6px 0;
+}
+.phase-form > .data-form label {
+  font-size: 12px;
+}
+@media (max-width: 760px) {
+  .path-stages {
+    grid-template-columns: 1fr;
+  }
+  .phase-form {
+    padding: 16px;
+  }
+}
