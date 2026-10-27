@@ -3,6 +3,7 @@ import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { query, transaction, type DB } from './db';
 import { allow, AppError, bangkokDate, canManage, grade, staff, type Actor } from './policy';
+import { assignPathsForEmployee, learningMutation } from './learning';
 const id = z.uuid();
 const name = z.string().trim().min(1).max(200);
 const date = z.iso.date();
@@ -42,6 +43,7 @@ async function employee(db: DB, a: Actor, employeeId: string, manage = false) {
   return e;
 }
 async function enroll(db: DB, companyId: string, employeeId: string, positionId: string | null) {
+  await assignPathsForEmployee(db, companyId, employeeId);
   await db.query(
     `INSERT INTO enrollments(company_id,course_id,employee_id) SELECT company_id,id,$2 FROM courses WHERE company_id=$1 AND auto_assign=true AND published=true AND (position_id IS NULL OR position_id=$3) ON CONFLICT(company_id,course_id,employee_id) DO NOTHING`,
     [companyId, employeeId, positionId],
@@ -67,6 +69,8 @@ export async function mutate(
   input: unknown,
 ): Promise<Record<string, unknown>> {
   return transaction(async (db) => {
+    const learning = await learningMutation(db, a, action, input);
+    if (learning) return learning;
     switch (action) {
       case 'employee.create': {
         allow(a, ['admin', 'hr']);
@@ -393,6 +397,7 @@ export async function mutate(
             type: z.enum(['text', 'video', 'document']),
             content: z.string().min(3).max(30000),
             media_url: safeUrl,
+            asset_id: z.union([id, z.literal('')]).optional(),
           })
           .parse(input);
         const c = (
@@ -406,10 +411,34 @@ export async function mutate(
           throw new AppError(
             'หลักสูตรเผยแพร่แล้ว กรุณาสร้างฉบับใหม่เพื่อไม่เปลี่ยนเกณฑ์ของผู้เรียนเดิม',
           );
-        if (v.type === 'video' && !v.media_url) throw new AppError('กรุณาใส่ลิงก์วิดีโอ');
+        if (v.asset_id) {
+          const asset = (
+            await db.query(
+              "SELECT * FROM learning_assets WHERE company_id=$1 AND id=$2 AND course_id=$3 AND state='ready'",
+              [a.companyId, v.asset_id, v.course_id],
+            )
+          ).rows[0];
+          if (!asset) throw new AppError('ไม่พบไฟล์ที่อัปโหลดสำเร็จของหลักสูตรนี้');
+          if (
+            (v.type === 'video' && !asset.content_type.startsWith('video/')) ||
+            (v.type === 'document' && asset.content_type !== 'application/pdf') ||
+            v.type === 'text'
+          )
+            throw new AppError('ชนิดไฟล์ไม่ตรงกับบทเรียน');
+        }
+        if (v.type === 'video' && !v.media_url && !v.asset_id)
+          throw new AppError('กรุณาใส่ลิงก์หรืออัปโหลดวิดีโอ');
         await db.query(
-          'INSERT INTO lessons(company_id,course_id,title,type,content,media_url,sort_order) SELECT $1,$2,$3,$4,$5,$6,COALESCE(MAX(sort_order),0)+1 FROM lessons WHERE company_id=$1 AND course_id=$2',
-          [a.companyId, v.course_id, v.title, v.type, v.content, v.media_url || null],
+          'INSERT INTO lessons(company_id,course_id,title,type,content,media_url,asset_id,sort_order) SELECT $1,$2,$3,$4,$5,$6,$7,COALESCE(MAX(sort_order),0)+1 FROM lessons WHERE company_id=$1 AND course_id=$2',
+          [
+            a.companyId,
+            v.course_id,
+            v.title,
+            v.type,
+            v.content,
+            v.asset_id ? null : v.media_url || null,
+            v.asset_id || null,
+          ],
         );
         await audit(db, a, action, v.course_id);
         return { message: 'เพิ่มบทเรียนแล้ว' };
@@ -471,6 +500,10 @@ export async function mutate(
           a.companyId,
           v.id,
         ]);
+        await db.query(
+          'UPDATE courses SET auto_assign=false WHERE company_id=$1 AND family_id=$2 AND version<$3',
+          [a.companyId, c.family_id, c.version],
+        );
         if (c.auto_assign)
           await db.query(
             `INSERT INTO enrollments(company_id,course_id,employee_id) SELECT $1,$2,id FROM employees WHERE company_id=$1 AND status!='exited' AND ($3::uuid IS NULL OR position_id=$3) ON CONFLICT(company_id,course_id,employee_id) DO NOTHING`,
@@ -573,6 +606,14 @@ export async function mutate(
         if (!n.requires_signoff) throw new AppError('หลักสูตรนี้ไม่ต้องตรวจรับ');
         if (!n.passed_at) throw new AppError('ต้องผ่านแบบทดสอบก่อนตรวจรับทักษะ');
         if (n.signed_off_at) throw new AppError('ตรวจรับแล้ว');
+        const missing = (
+          await db.query(
+            'SELECT i.id FROM skill_items i WHERE i.company_id=$1 AND i.course_id=$2 AND i.required=true AND NOT EXISTS(SELECT 1 FROM skill_checks sc WHERE sc.company_id=$1 AND sc.enrollment_id=$3 AND sc.item_id=i.id AND sc.passed=true)',
+            [a.companyId, n.course_id, n.id],
+          )
+        ).rows;
+        if (missing.length)
+          throw new AppError('ต้องผ่านเช็กลิสต์ทักษะที่จำเป็นครบทุกข้อก่อนตรวจรับ');
         await db.query(
           'UPDATE enrollments SET signed_off_at=now(),signed_off_by=$3,signoff_note=$4 WHERE company_id=$1 AND id=$2',
           [a.companyId, n.id, a.userId, v.note],

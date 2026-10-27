@@ -14,6 +14,8 @@ export default async function Page({ params }: { params: Promise<{ section: stri
       'shifts',
       'requests',
       'learning',
+      'paths',
+      'notifications',
       'readiness',
       'assistant',
       'settings',

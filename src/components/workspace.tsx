@@ -1,6 +1,9 @@
 'use client';
 import { useState, useTransition, useRef, useEffect, type ReactNode } from 'react';
 import Link from 'next/link';
+import LearningPaths from './learning-paths';
+import SkillChecklist from './skill-checklist';
+import UploadLesson from './upload-lesson';
 import { useRouter } from 'next/navigation';
 import {
   LayoutDashboard,
@@ -70,6 +73,8 @@ const nav = [
   ['requests', 'ลา / OT และการอนุมัติ', ClipboardCheck],
   ['learning', 'ศูนย์การเรียนรู้', BookOpen],
   ['readiness', 'ความพร้อมของทีม', GraduationCap],
+  ['paths', 'เส้นทางการเรียน', Network],
+  ['notifications', 'แจ้งเตือนการเรียน', Bell],
   ['assistant', 'ผู้ช่วยคู่มือ', MessageSquareText],
   ['settings', 'ตั้งค่าและการเชื่อมต่อ', Settings],
 ] as const;
@@ -171,6 +176,8 @@ export default function Workspace({ data: d, section }: { data: Data; section: s
     initial?: Row;
   } | null>(null);
   const [course, setCourse] = useState<Row | null>(null);
+  const [reviewEnrollment, setReviewEnrollment] = useState<Row | null>(null);
+  const [uploadCourse, setUploadCourse] = useState<string | null>(null);
   const [tab, setTab] = useState('all');
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [quizResult, setQuizResult] = useState<Row | null>(null);
@@ -220,6 +227,7 @@ export default function Workspace({ data: d, section }: { data: Data; section: s
         flash(r);
         if (r.ok) {
           if (close) setModal(null);
+          if (action === 'course.clone' && r.id) setCourse({ id: r.id });
           if (r.key) window.prompt('API key แสดงครั้งเดียว กรุณาคัดลอกเก็บไว้', r.key);
           router.refresh();
         }
@@ -447,6 +455,8 @@ export default function Workspace({ data: d, section }: { data: Data; section: s
       .map((p: Row) => p.lesson_id),
   );
   const pageNames: Row = {
+    paths: 'เส้นทางการเรียนรู้',
+    notifications: 'แจ้งเตือนการเรียน',
     dashboard: 'ภาพรวมการทำงาน',
     employees: 'ข้อมูลพนักงาน',
     organization: 'โครงสร้างองค์กร',
@@ -493,8 +503,8 @@ export default function Workspace({ data: d, section }: { data: Data; section: s
         <nav>
           {nav.map(([key, title, Icon], i) => (
             <div key={key}>
-              {i === 7 && <div className="nav-label">พัฒนาทีมของคุณ</div>}
-              {i === 10 && <div className="nav-separator" />}
+              {key === 'learning' && <div className="nav-label">พัฒนาทีมของคุณ</div>}
+              {key === 'settings' && <div className="nav-separator" />}
               <Link
                 onClick={() => setMenu(false)}
                 href={'/' + key}
@@ -576,12 +586,12 @@ export default function Workspace({ data: d, section }: { data: Data; section: s
               })}
             </span>
             <Link
-              href="/requests"
+              href="/notifications"
               className="notification"
-              aria-label={`คำขอรออนุมัติ ${pendingRequests.length} รายการ`}
+              aria-label={`แจ้งเตือนการเรียน ${d.alerts.filter((a: Row) => !a.read).length} รายการ`}
             >
               <Bell size={19} />
-              {pendingRequests.length > 0 && <i />}
+              {d.alerts.some((a: Row) => !a.read) && <i />}
             </Link>
             <span className="topbar-divider" />
             <Avatar name={a.name} />
@@ -605,6 +615,8 @@ export default function Workspace({ data: d, section }: { data: Data; section: s
                 {
                   (
                     {
+                      paths: 'จัดเส้นทางให้พนักงานใหม่เรียนรู้ได้ทีละขั้น',
+                      notifications: 'ติดตามกำหนดเรียนและงานตรวจรับทักษะ',
                       dashboard: `สวัสดี ${a.name.split(' ')[0]} ดูแลคนและการเติบโตของทีมในพื้นที่เดียว`,
                       employees: 'ข้อมูลที่เป็นระเบียบ เพื่อดูแลทุกคนได้ดียิ่งขึ้น',
                       organization: 'เชื่อมคน ตำแหน่ง และทีมให้ทำงานไปในทิศทางเดียวกัน',
@@ -674,6 +686,46 @@ export default function Workspace({ data: d, section }: { data: Data; section: s
               )}
             </div>
           </div>
+          {section === 'paths' && <LearningPaths data={d} />}
+          {section === 'notifications' && (
+            <Panel
+              title="รายการที่ต้องติดตาม"
+              subtitle="แจ้งเตือนในแอปตามกำหนดเรียนและผลสอบ ไม่ส่งข้อความออกนอกระบบ"
+            >
+              <div className="request-list">
+                {d.alerts.length ? (
+                  d.alerts.map((alert: Row) => (
+                    <div className="request-row" key={alert.key}>
+                      <Bell size={19} />
+                      <div className="request-info">
+                        <strong>
+                          {alert.title}
+                          <Badge tone={alert.read ? 'neutral' : alert.tone}>
+                            {alert.read ? 'อ่านแล้ว' : 'ยังไม่อ่าน'}
+                          </Badge>
+                        </strong>
+                        <p>{alert.detail}</p>
+                        <Link className="text-link" href={alert.href}>
+                          ดูรายการ
+                        </Link>
+                      </div>
+                      {!alert.read && (
+                        <button
+                          className="btn small"
+                          disabled={pending}
+                          onClick={() => act('notification.read', { key: alert.key })}
+                        >
+                          อ่านแล้ว
+                        </button>
+                      )}
+                    </div>
+                  ))
+                ) : (
+                  <Empty text="ไม่มีรายการที่ต้องติดตาม" />
+                )}
+              </div>
+            </Panel>
+          )}
           {section === 'dashboard' && (
             <>
               <div className="stats-grid">
@@ -1705,21 +1757,7 @@ export default function Workspace({ data: d, section }: { data: Data; section: s
                                 canReview(n.employee_id) && (
                                   <button
                                     className="btn small"
-                                    onClick={() =>
-                                      form(
-                                        'ตรวจรับทักษะจากการปฏิบัติจริง',
-                                        'skill.signoff',
-                                        [
-                                          {
-                                            key: 'note',
-                                            label: 'ระบุงานที่สังเกตและผลการปฏิบัติ',
-                                            type: 'textarea',
-                                            hint: 'ตรวจสอบการทำงานจริงก่อนรับรอง ระบุหลักฐานอย่างน้อย 5 ตัวอักษร',
-                                          },
-                                        ],
-                                        { enrollment_id: n.id },
-                                      )
-                                    }
+                                    onClick={() => setReviewEnrollment(n)}
                                   >
                                     <CheckCircle2 size={15} /> ตรวจรับทักษะ
                                   </button>
@@ -2177,11 +2215,40 @@ export default function Workspace({ data: d, section }: { data: Data; section: s
           </form>
         </Dialog>
       )}
-      {selectedCourse && !modal && (
+      {reviewEnrollment && (
+        <SkillChecklist
+          enrollment={reviewEnrollment}
+          items={d.skillItems.filter((i: Row) => i.course_id === reviewEnrollment.course_id)}
+          checks={d.skillChecks.filter((c: Row) => c.enrollment_id === reviewEnrollment.id)}
+          onClose={() => setReviewEnrollment(null)}
+        />
+      )}
+      {uploadCourse && (
+        <UploadLesson
+          courseId={uploadCourse}
+          onClose={() => setUploadCourse(null)}
+          onSaved={() => {
+            router.refresh();
+            flash({ ok: true, message: 'เพิ่มไฟล์บทเรียนแล้ว' });
+          }}
+        />
+      )}
+      {selectedCourse && !modal && !uploadCourse && (
         <Dialog wide title={selectedCourse.title} onClose={() => setCourse(null)}>
           <div className="course-detail">
             <div className="detail-overview">
-              <Badge tone="mint">{selectedCourse.category}</Badge>
+              <Badge tone="mint">
+                {selectedCourse.category} · v{selectedCourse.version}
+              </Badge>
+              {isStaff && selectedCourse.published && (
+                <button
+                  className="btn small"
+                  disabled={pending}
+                  onClick={() => act('course.clone', { id: selectedCourse.id }, false)}
+                >
+                  สร้างเวอร์ชันใหม่
+                </button>
+              )}
               <p>{selectedCourse.description}</p>
               <div className="course-meta">
                 <span>
@@ -2198,6 +2265,34 @@ export default function Workspace({ data: d, section }: { data: Data; section: s
               </div>
               {isStaff && !selectedCourse.published && (
                 <div className="settings-actions">
+                  <button
+                    className="btn small"
+                    disabled={!d.features.uploads}
+                    onClick={() => setUploadCourse(selectedCourse.id)}
+                  >
+                    อัปโหลด PDF / วิดีโอ
+                  </button>
+                  <button
+                    className="btn small"
+                    onClick={() =>
+                      form(
+                        'เพิ่มเกณฑ์ตรวจทักษะ',
+                        'skill.item',
+                        [
+                          { key: 'title', label: 'ทักษะที่ต้องสังเกต' },
+                          {
+                            key: 'required',
+                            label: 'ต้องผ่านข้อนี้ก่อนรับรอง',
+                            type: 'checkbox',
+                            value: true,
+                          },
+                        ],
+                        { course_id: selectedCourse.id },
+                      )
+                    }
+                  >
+                    เพิ่มเช็กลิสต์ทักษะ
+                  </button>
                   <button className="btn small" onClick={() => addLesson(selectedCourse)}>
                     <Plus size={15} /> เพิ่มบทเรียน
                   </button>
@@ -2222,6 +2317,31 @@ export default function Workspace({ data: d, section }: { data: Data; section: s
             {!selectedEnrollment && !isStaff && (
               <div className="notice">คุณยังไม่ได้รับมอบหมายหลักสูตรนี้ กรุณาติดต่อหัวหน้างาน</div>
             )}
+            {!selectedCourse.published && !d.features.uploads && (
+              <div className="notice">การอัปโหลดไฟล์ออนไลน์ยังต้องเชื่อมพื้นที่จัดเก็บ private</div>
+            )}
+            {d.skillItems.some((i: Row) => i.course_id === selectedCourse.id) && (
+              <div className="notice">
+                <strong>เกณฑ์ตรวจทักษะจริง</strong>
+                {d.skillItems
+                  .filter((i: Row) => i.course_id === selectedCourse.id)
+                  .map((i: Row) => (
+                    <p key={i.id}>
+                      □ {i.title} {i.required ? '(จำเป็น)' : ''}
+                      {isStaff && !selectedCourse.published && (
+                        <button
+                          className="text-link"
+                          disabled={pending}
+                          onClick={() => act('skill.item.delete', { id: i.id }, false)}
+                        >
+                          {' '}
+                          นำเกณฑ์ออก
+                        </button>
+                      )}
+                    </p>
+                  ))}
+              </div>
+            )}
             <h3>บทเรียน ({selectedLessons.length})</h3>
             {selectedLessons.map((l: Row, i: number) => (
               <details
@@ -2244,6 +2364,37 @@ export default function Workspace({ data: d, section }: { data: Data; section: s
                   )}
                 </summary>
                 <div className="lesson-content">
+                  {isStaff && !selectedCourse.published && (
+                    <button
+                      className="btn small"
+                      onClick={() =>
+                        form(
+                          'แก้ไขบทเรียนฉบับร่าง',
+                          'lesson.update',
+                          [
+                            { key: 'title', label: 'ชื่อบทเรียน' },
+                            { key: 'content', label: 'เนื้อหา', type: 'textarea' },
+                          ],
+                          { id: l.id, title: l.title, content: l.content },
+                        )
+                      }
+                    >
+                      แก้ไขเนื้อหา
+                    </button>
+                  )}
+                  {l.asset_id &&
+                    (l.type === 'video' ? (
+                      <video controls preload="metadata" src={'/api/files/' + l.asset_id} />
+                    ) : (
+                      <a
+                        className="btn"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        href={'/api/files/' + l.asset_id}
+                      >
+                        เปิดเอกสาร PDF
+                      </a>
+                    ))}
                   {l.type === 'video' &&
                     l.media_url &&
                     (/\.(mp4|webm|ogg)(\?|$)/i.test(l.media_url) ? (
@@ -2287,6 +2438,21 @@ export default function Workspace({ data: d, section }: { data: Data; section: s
               <div className="notice">ยังไม่มีบทเรียน เพิ่มเนื้อหาก่อนเผยแพร่</div>
             )}
             <h3>แบบทดสอบ ({selectedQuestions.length} ข้อ)</h3>
+            {isStaff &&
+              !selectedCourse.published &&
+              selectedQuestions.map((q: Row) => (
+                <div className="notice" key={q.id}>
+                  <strong>{q.prompt}</strong>
+                  <p>{q.options.join(' / ')}</p>
+                  <button
+                    className="text-link"
+                    disabled={pending}
+                    onClick={() => act('question.delete', { id: q.id }, false)}
+                  >
+                    นำข้อสอบออกจากฉบับร่าง
+                  </button>
+                </div>
+              ))}
             {selectedEnrollment ? (
               <>
                 <div className="notice">

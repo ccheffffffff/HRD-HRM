@@ -2,11 +2,21 @@ import { query } from './db';
 import { context } from './session';
 import { staff } from './policy';
 import { readEmployees } from './repository';
+import { learningAlerts } from './learning';
+import { bangkokDate } from './policy';
 export async function loadWorkspace() {
   const actor = await context();
   const a = actor;
   const unrestricted = staff(a);
   const employees = await readEmployees(a);
+  const paths = await query(
+    `SELECT * FROM learning_paths WHERE company_id=$1 ${unrestricted ? '' : 'AND published=true'} ORDER BY created_at`,
+    [a.companyId],
+  );
+  const pathItems = await query(
+    `SELECT i.*,c.title course_title FROM learning_path_items i JOIN learning_paths p ON p.id=i.path_id JOIN courses c ON c.id=i.course_id WHERE i.company_id=$1 ${unrestricted ? '' : 'AND p.published=true'} ORDER BY i.sort_order`,
+    [a.companyId],
+  );
   const employeeIds = employees.map((e) => e.id);
   const [
     companies,
@@ -81,9 +91,33 @@ export async function loadWorkspace() {
         )
       : Promise.resolve([]),
   ]);
+  const pathAssignments = await query(
+    'SELECT * FROM path_assignments WHERE company_id=$1 AND employee_id=ANY($2::uuid[])',
+    [a.companyId, employeeIds],
+  );
+  const courseIds = courses.map((c) => c.id);
+  const skillItems = await query(
+    'SELECT * FROM skill_items WHERE company_id=$1 AND course_id=ANY($2::uuid[]) ORDER BY sort_order',
+    [a.companyId, courseIds],
+  );
+  const skillChecks = await query(
+    'SELECT s.* FROM skill_checks s JOIN enrollments n ON n.id=s.enrollment_id WHERE s.company_id=$1 AND n.employee_id=ANY($2::uuid[])',
+    [a.companyId, employeeIds],
+  );
+  const reads = await query(
+    'SELECT notification_key FROM notification_reads WHERE company_id=$1 AND user_id=$2',
+    [a.companyId, a.userId],
+  );
+  const alerts = learningAlerts(a, employees, enrollments, reads, bangkokDate(), attempts);
   return JSON.parse(
     JSON.stringify({
       actor,
+      paths,
+      pathItems,
+      pathAssignments,
+      skillItems,
+      skillChecks,
+      alerts,
       companies,
       employees,
       departments,
@@ -105,6 +139,7 @@ export async function loadWorkspace() {
         microsoft: !!process.env.AUTH_MICROSOFT_ENTRA_ID_ID,
         ai: !!(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL),
         line: !!process.env.LINE_CHANNEL_ACCESS_TOKEN,
+        uploads: !!process.env.BLOB_READ_WRITE_TOKEN || !process.env.VERCEL,
       },
     }),
   );
