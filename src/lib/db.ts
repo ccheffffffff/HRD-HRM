@@ -10,9 +10,13 @@ const globalDb = globalThis as unknown as {
   queue?: Promise<unknown>;
 };
 export function database() {
-  const url = process.env.DATABASE_URL;
+  const url = process.env.DATABASE_URL || process.env.POSTGRES_URL;
   if (!url) throw new Error('DATABASE_URL is required. Run pnpm run setup.');
   if (url.startsWith('pglite:')) {
+    if (process.env.VERCEL)
+      throw new Error(
+        'Vercel requires a persistent PostgreSQL DATABASE_URL; PGlite is local-only.',
+      );
     if (url !== 'pglite:memory')
       mkdirSync(path.dirname(path.resolve(url.slice(7))), { recursive: true });
     globalDb.lite ??= new PGlite(
@@ -25,7 +29,10 @@ export function database() {
   }
   globalDb.pool ??= new Pool({
     connectionString: url,
-    max: 10,
+    max: process.env.VERCEL ? 3 : 10,
+    connectionTimeoutMillis: 10000,
+    idleTimeoutMillis: 20000,
+    allowExitOnIdle: true,
     options: '-c timezone=Asia/Bangkok',
   });
   return globalDb.pool;

@@ -84,6 +84,8 @@ DemoScan และ DemoLedger เป็นชื่อสมมติสำห�
 
 ## ตรวจสอบและ build
 
+การ deploy บน Vercel ดู [docs/deployment.md](docs/deployment.md) ห้ามใช้ PGlite บน serverless
+
 ```sh
 pnpm test
 pnpm typecheck

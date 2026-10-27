@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1",
     "build": "next build",
+    "deploy:build": "node --import tsx scripts/prepare-deployment.ts && next build",
     "start": "next start --hostname 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "db:migrate": "node --env-file=.env --import tsx scripts/migrate.ts",
@@ -33,5 +34,8 @@
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   },
-  "packageManager": "pnpm@11.25.0"
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": "24.x"
+  }
 }
