@@ -1,0 +1,22 @@
+name: Validate MVP
+on: [push, pull_request]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      AUTH_SECRET: ci-build-only-not-for-production-replace-before-deploy
+      DATABASE_URL: pglite:memory
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm typecheck
+      - run: pnpm build
